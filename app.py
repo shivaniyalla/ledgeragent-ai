@@ -1194,14 +1194,67 @@ if current_role == "client":
 
 
 # =========================================================
+# DOCUMENT ACCESS CONTROL
+# =========================================================
+
+def accountant_has_document_access(document_id):
+    if current_role == "admin":
+        return True
+    if current_role != "accountant":
+        return False
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT 1
+        FROM documents d
+        JOIN accountant_clients ac
+          ON ac.client_id = d.client_id
+         AND ac.accountant_id = ?
+        WHERE d.id = ?
+          AND d.accountant_id = ?
+        LIMIT 1
+        """,
+        (current_user_id, document_id, current_user_id)
+    )
+    allowed = cursor.fetchone() is not None
+    conn.close()
+    return allowed
+
+
+def accountant_has_invoice_access(invoice_id):
+    if current_role == "admin":
+        return True
+    if current_role != "accountant":
+        return False
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT 1
+        FROM invoices i
+        JOIN accountant_clients ac
+          ON ac.client_id = i.client_id
+         AND ac.accountant_id = ?
+        WHERE i.id = ?
+          AND i.accountant_id = ?
+        LIMIT 1
+        """,
+        (current_user_id, invoice_id, current_user_id)
+    )
+    allowed = cursor.fetchone() is not None
+    conn.close()
+    return allowed
+
+
+# =========================================================
 # GET INVOICES
 # =========================================================
 
 def get_invoices():
-
-    conn = sqlite3.connect(
-        DB_NAME
-    )
+    conn = sqlite3.connect(DB_NAME)
 
     query = """
         SELECT
@@ -1220,66 +1273,42 @@ def get_invoices():
             i.uploaded_by,
             i.client_id,
             i.accountant_id,
-
             c.username AS client_name,
             a.username AS accountant_name
-
         FROM invoices i
-
-        LEFT JOIN users c
-            ON i.client_id = c.id
-
-        LEFT JOIN users a
-            ON i.accountant_id = a.id
+        LEFT JOIN users c ON i.client_id = c.id
+        LEFT JOIN users a ON i.accountant_id = a.id
     """
 
     params = []
 
     if current_role == "client":
-
-        query += """
-            WHERE i.client_id = ?
-        """
-
-        params.append(
-            current_user_id
-        )
+        query += " WHERE i.client_id = ?"
+        params.append(current_user_id)
 
     elif current_role == "accountant":
-
         query += """
+            JOIN accountant_clients ac
+              ON ac.client_id = i.client_id
+             AND ac.accountant_id = ?
             WHERE i.accountant_id = ?
         """
+        params.extend([current_user_id, current_user_id])
 
-        params.append(
-            current_user_id
-        )
+    elif current_role == "admin":
+        pass
 
-    query += """
-        ORDER BY i.id DESC
-    """
+    else:
+        query += " WHERE 1 = 0"
 
-    df = pd.read_sql_query(
-        query,
-        conn,
-        params=params
-    )
+    query += " ORDER BY i.id DESC"
 
+    df = pd.read_sql_query(query, conn, params=params)
     conn.close()
-
     return df
 
-
-# =========================================================
-# GET PARTICULAR INVOICE
-# =========================================================
-
 def get_invoice_details(invoice_id):
-
-    conn = sqlite3.connect(
-        DB_NAME
-    )
-
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
     query = """
@@ -1301,50 +1330,34 @@ def get_invoice_details(invoice_id):
             i.uploaded_by,
             i.client_id,
             i.accountant_id,
-
             c.username AS client_name,
             a.username AS accountant_name
-
         FROM invoices i
-
-        LEFT JOIN users c
-            ON i.client_id = c.id
-
-        LEFT JOIN users a
-            ON i.accountant_id = a.id
-
+        LEFT JOIN users c ON i.client_id = c.id
+        LEFT JOIN users a ON i.accountant_id = a.id
         WHERE i.id = ?
     """
-
     params = [invoice_id]
 
     if current_role == "client":
-
-        query += """
-            AND i.client_id = ?
-        """
-
-        params.append(
-            current_user_id
-        )
-
+        query += " AND i.client_id = ?"
+        params.append(current_user_id)
     elif current_role == "accountant":
-
         query += """
             AND i.accountant_id = ?
+            AND EXISTS (
+                SELECT 1
+                FROM accountant_clients ac
+                WHERE ac.accountant_id = ?
+                  AND ac.client_id = i.client_id
+            )
         """
+        params.extend([current_user_id, current_user_id])
+    elif current_role != "admin":
+        query += " AND 1 = 0"
 
-        params.append(
-            current_user_id
-        )
-
-    cursor.execute(
-        query,
-        params
-    )
-
+    cursor.execute(query, params)
     row = cursor.fetchone()
-
     conn.close()
 
     if row is None:
@@ -1372,16 +1385,8 @@ def get_invoice_details(invoice_id):
         "accountant_name": row[18]
     }
 
-
-# =========================================================
-# GET REVIEW QUEUE
-# =========================================================
-
 def get_review_queue():
-
-    conn = sqlite3.connect(
-        DB_NAME
-    )
+    conn = sqlite3.connect(DB_NAME)
 
     query = """
         SELECT
@@ -1395,80 +1400,46 @@ def get_review_queue():
             d.created_at,
             d.client_id,
             d.accountant_id,
-
             i.invoice_number,
             i.invoice_date,
             i.seller_name,
             i.customer_name,
             i.total,
-
             c.username AS client_name,
             a.username AS accountant_name
-
         FROM documents d
-
-        LEFT JOIN invoices i
-            ON d.invoice_id = i.id
-
-        LEFT JOIN users c
-            ON d.client_id = c.id
-
-        LEFT JOIN users a
-            ON d.accountant_id = a.id
-
-        WHERE d.workflow_status IN (
-            'REVIEW_REQUIRED',
-            'IN_REVIEW'
-        )
+        LEFT JOIN invoices i ON d.invoice_id = i.id
+        LEFT JOIN users c ON d.client_id = c.id
+        LEFT JOIN users a ON d.accountant_id = a.id
+        WHERE d.workflow_status IN ('REVIEW_REQUIRED', 'IN_REVIEW')
     """
-
     params = []
 
     if current_role == "accountant":
-
         query += """
             AND d.accountant_id = ?
+            AND EXISTS (
+                SELECT 1
+                FROM accountant_clients ac
+                WHERE ac.accountant_id = ?
+                  AND ac.client_id = d.client_id
+            )
         """
-
-        params.append(
-            current_user_id
-        )
-
+        params.extend([current_user_id, current_user_id])
     elif current_role == "client":
+        query += " AND d.client_id = ?"
+        params.append(current_user_id)
+    elif current_role != "admin":
+        query += " AND 1 = 0"
 
-        query += """
-            AND d.client_id = ?
-        """
+    query += " ORDER BY d.id DESC"
 
-        params.append(
-            current_user_id
-        )
-
-    query += """
-        ORDER BY d.id DESC
-    """
-
-    df = pd.read_sql_query(
-        query,
-        conn,
-        params=params
-    )
-
+    df = pd.read_sql_query(query, conn, params=params)
     conn.close()
-
     return df
 
-
-# =========================================================
-# GET DOCUMENT DETAILS
-# =========================================================
-
 def get_document_details(document_id):
-
-    conn = sqlite3.connect(
-        DB_NAME
-    )
-
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
     query = """
@@ -1484,55 +1455,36 @@ def get_document_details(document_id):
             d.updated_at,
             d.client_id,
             d.accountant_id,
-
             i.invoice_number,
-
             c.username AS client_name,
             a.username AS accountant_name
-
         FROM documents d
-
-        LEFT JOIN invoices i
-            ON d.invoice_id = i.id
-
-        LEFT JOIN users c
-            ON d.client_id = c.id
-
-        LEFT JOIN users a
-            ON d.accountant_id = a.id
-
+        LEFT JOIN invoices i ON d.invoice_id = i.id
+        LEFT JOIN users c ON d.client_id = c.id
+        LEFT JOIN users a ON d.accountant_id = a.id
         WHERE d.id = ?
     """
-
     params = [document_id]
 
     if current_role == "accountant":
-
         query += """
             AND d.accountant_id = ?
+            AND EXISTS (
+                SELECT 1
+                FROM accountant_clients ac
+                WHERE ac.accountant_id = ?
+                  AND ac.client_id = d.client_id
+            )
         """
-
-        params.append(
-            current_user_id
-        )
-
+        params.extend([current_user_id, current_user_id])
     elif current_role == "client":
+        query += " AND d.client_id = ?"
+        params.append(current_user_id)
+    elif current_role != "admin":
+        query += " AND 1 = 0"
 
-        query += """
-            AND d.client_id = ?
-        """
-
-        params.append(
-            current_user_id
-        )
-
-    cursor.execute(
-        query,
-        params
-    )
-
+    cursor.execute(query, params)
     row = cursor.fetchone()
-
     conn.close()
 
     if row is None:
@@ -1555,131 +1507,69 @@ def get_document_details(document_id):
         "accountant_name": row[13]
     }
 
-
-# =========================================================
-# START ACCOUNTANT REVIEW
-# =========================================================
-
-def start_document_review(
-    document_id,
-    user_id
-):
-
+def start_document_review(document_id, user_id):
     if current_role not in ["admin", "accountant"]:
         return False
 
-    conn = sqlite3.connect(
-        DB_NAME
-    )
+    if user_id != current_user_id:
+        return False
 
+    if current_role == "accountant" and not accountant_has_document_access(document_id):
+        return False
+
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
     now = current_timestamp()
 
-    # -----------------------------------------------------
-    # Get document ownership
-    # -----------------------------------------------------
-
     cursor.execute(
-        """
-        SELECT
-            invoice_id,
-            accountant_id
-        FROM documents
-        WHERE id = ?
-        """,
+        "SELECT invoice_id, accountant_id FROM documents WHERE id = ?",
         (document_id,)
     )
-
     row = cursor.fetchone()
 
     if row is None:
-
         conn.close()
-
         return False
 
-    invoice_id = row[0]
-    accountant_id = row[1]
+    invoice_id, accountant_id = row
 
-    # Accountant can review only assigned documents
-    if current_role == "accountant":
-
-        if accountant_id != current_user_id:
-
-            conn.close()
-
-            return False
-
-    # -----------------------------------------------------
-    # Update document
-    # -----------------------------------------------------
+    if current_role == "accountant" and accountant_id != current_user_id:
+        conn.close()
+        return False
 
     cursor.execute(
         """
         UPDATE documents
-
-        SET
-            workflow_status = 'IN_REVIEW',
-            updated_at = ?
-
-        WHERE id = ?
+        SET workflow_status = 'IN_REVIEW', updated_at = ?
+        WHERE id = ? AND workflow_status = 'REVIEW_REQUIRED'
         """,
-        (
-            now,
-            document_id
-        )
+        (now, document_id)
     )
 
-    # -----------------------------------------------------
-    # Update invoice
-    # -----------------------------------------------------
+    if cursor.rowcount != 1:
+        conn.close()
+        return False
 
     if invoice_id is not None:
-
         cursor.execute(
             """
             UPDATE invoices
-
-            SET
-                workflow_status = 'IN_REVIEW',
-                updated_at = ?
-
+            SET workflow_status = 'IN_REVIEW', updated_at = ?
             WHERE id = ?
             """,
-            (
-                now,
-                invoice_id
-            )
+            (now, invoice_id)
         )
-
-    # -----------------------------------------------------
-    # Audit Trail
-    # -----------------------------------------------------
 
     cursor.execute(
         """
-        INSERT INTO audit_logs (
-            document_id,
-            user_id,
-            action,
-            details,
-            created_at
-        )
+        INSERT INTO audit_logs (document_id, user_id, action, details, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (
-            document_id,
-            user_id,
-            "REVIEW_STARTED",
-            "Accountant started reviewing the document.",
-            now
-        )
+        (document_id, user_id, "REVIEW_STARTED", "Accountant started reviewing the document.", now)
     )
 
     conn.commit()
     conn.close()
-
     return True
 
 
@@ -1687,163 +1577,80 @@ def start_document_review(
 # APPROVE DOCUMENT
 # =========================================================
 
-def approve_document(
-    document_id,
-    user_id,
-    comment=""
-):
-
-    if not has_permission(
-        current_role,
-        "approve_document"
-    ):
-
+def approve_document(document_id, user_id, comment=""):
+    if not has_permission(current_role, "approve_document"):
         return False
 
-    conn = sqlite3.connect(
-        DB_NAME
-    )
+    if user_id != current_user_id:
+        return False
 
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
     now = current_timestamp()
 
-    # -----------------------------------------------------
-    # Get invoice ID + accountant
-    # -----------------------------------------------------
-
     cursor.execute(
-        """
-        SELECT
-            invoice_id,
-            accountant_id
-        FROM documents
-        WHERE id = ?
-        """,
+        "SELECT invoice_id, accountant_id, client_id FROM documents WHERE id = ?",
         (document_id,)
     )
-
     row = cursor.fetchone()
 
     if row is None:
-
         conn.close()
-
         return False
 
-    invoice_id = row[0]
-    accountant_id = row[1]
+    invoice_id, accountant_id, client_id = row
 
-    # Accountant can approve only assigned documents
     if current_role == "accountant":
-
-        if accountant_id != current_user_id:
-
+        if accountant_id != current_user_id or not accountant_has_document_access(document_id):
             conn.close()
-
             return False
-
-    # -----------------------------------------------------
-    # UPDATE DOCUMENT
-    # -----------------------------------------------------
 
     cursor.execute(
         """
         UPDATE documents
-
-        SET
-            workflow_status = 'APPROVED',
-            updated_at = ?
-
+        SET workflow_status = 'APPROVED', updated_at = ?
         WHERE id = ?
+          AND workflow_status IN ('REVIEW_REQUIRED', 'IN_REVIEW')
         """,
-        (
-            now,
-            document_id
-        )
+        (now, document_id)
     )
 
-    # -----------------------------------------------------
-    # UPDATE INVOICE
-    # -----------------------------------------------------
+    if cursor.rowcount != 1:
+        conn.close()
+        return False
 
     if invoice_id is not None:
-
         cursor.execute(
             """
             UPDATE invoices
-
-            SET
-                workflow_status = 'APPROVED',
-                updated_at = ?
-
+            SET workflow_status = 'APPROVED', updated_at = ?
             WHERE id = ?
             """,
-            (
-                now,
-                invoice_id
-            )
+            (now, invoice_id)
         )
-
-    # -----------------------------------------------------
-    # APPROVAL RECORD
-    # -----------------------------------------------------
 
     cursor.execute(
         """
-        INSERT INTO approvals (
-            document_id,
-            action,
-            user_id,
-            comment,
-            created_at
-        )
+        INSERT INTO approvals (document_id, action, user_id, comment, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (
-            document_id,
-            "APPROVED",
-            user_id,
-            comment,
-            now
-        )
+        (document_id, "APPROVED", user_id, comment, now)
     )
 
-    # -----------------------------------------------------
-    # AUDIT LOG
-    # -----------------------------------------------------
-
     details = "Document approved by accountant."
-
     if comment.strip():
-
-        details += (
-            f" Accountant comment: {comment.strip()}"
-        )
+        details += f" Accountant comment: {comment.strip()}"
 
     cursor.execute(
         """
-        INSERT INTO audit_logs (
-            document_id,
-            user_id,
-            action,
-            details,
-            created_at
-        )
+        INSERT INTO audit_logs (document_id, user_id, action, details, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (
-            document_id,
-            user_id,
-            "APPROVED",
-            details,
-            now
-        )
+        (document_id, user_id, "APPROVED", details, now)
     )
 
     conn.commit()
     conn.close()
-
     return True
 
 
@@ -1851,163 +1658,82 @@ def approve_document(
 # REJECT DOCUMENT
 # =========================================================
 
-def reject_document(
-    document_id,
-    user_id,
-    comment=""
-):
-
-    if not has_permission(
-        current_role,
-        "reject_document"
-    ):
-
+def reject_document(document_id, user_id, comment=""):
+    if not has_permission(current_role, "reject_document"):
         return False
 
-    conn = sqlite3.connect(
-        DB_NAME
-    )
+    if user_id != current_user_id:
+        return False
 
+    if not comment.strip():
+        return False
+
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-
     now = current_timestamp()
 
-    # -----------------------------------------------------
-    # Get invoice ID + accountant
-    # -----------------------------------------------------
-
     cursor.execute(
-        """
-        SELECT
-            invoice_id,
-            accountant_id
-        FROM documents
-        WHERE id = ?
-        """,
+        "SELECT invoice_id, accountant_id, client_id FROM documents WHERE id = ?",
         (document_id,)
     )
-
     row = cursor.fetchone()
 
     if row is None:
-
         conn.close()
-
         return False
 
-    invoice_id = row[0]
-    accountant_id = row[1]
+    invoice_id, accountant_id, client_id = row
 
-    # Accountant can reject only assigned documents
     if current_role == "accountant":
-
-        if accountant_id != current_user_id:
-
+        if accountant_id != current_user_id or not accountant_has_document_access(document_id):
             conn.close()
-
             return False
-
-    # -----------------------------------------------------
-    # UPDATE DOCUMENT
-    # -----------------------------------------------------
 
     cursor.execute(
         """
         UPDATE documents
-
-        SET
-            workflow_status = 'REJECTED',
-            updated_at = ?
-
+        SET workflow_status = 'REJECTED', updated_at = ?
         WHERE id = ?
+          AND workflow_status IN ('REVIEW_REQUIRED', 'IN_REVIEW')
         """,
-        (
-            now,
-            document_id
-        )
+        (now, document_id)
     )
 
-    # -----------------------------------------------------
-    # UPDATE INVOICE
-    # -----------------------------------------------------
+    if cursor.rowcount != 1:
+        conn.close()
+        return False
 
     if invoice_id is not None:
-
         cursor.execute(
             """
             UPDATE invoices
-
-            SET
-                workflow_status = 'REJECTED',
-                updated_at = ?
-
+            SET workflow_status = 'REJECTED', updated_at = ?
             WHERE id = ?
             """,
-            (
-                now,
-                invoice_id
-            )
+            (now, invoice_id)
         )
-
-    # -----------------------------------------------------
-    # APPROVAL RECORD
-    # -----------------------------------------------------
 
     cursor.execute(
         """
-        INSERT INTO approvals (
-            document_id,
-            action,
-            user_id,
-            comment,
-            created_at
-        )
+        INSERT INTO approvals (document_id, action, user_id, comment, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (
-            document_id,
-            "REJECTED",
-            user_id,
-            comment,
-            now
-        )
+        (document_id, "REJECTED", user_id, comment, now)
     )
 
-    # -----------------------------------------------------
-    # AUDIT LOG
-    # -----------------------------------------------------
-
     details = "Document rejected by accountant."
-
-    if comment.strip():
-
-        details += (
-            f" Accountant comment: {comment.strip()}"
-        )
+    details += f" Accountant comment: {comment.strip()}"
 
     cursor.execute(
         """
-        INSERT INTO audit_logs (
-            document_id,
-            user_id,
-            action,
-            details,
-            created_at
-        )
+        INSERT INTO audit_logs (document_id, user_id, action, details, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (
-            document_id,
-            user_id,
-            "REJECTED",
-            details,
-            now
-        )
+        (document_id, user_id, "REJECTED", details, now)
     )
 
     conn.commit()
     conn.close()
-
     return True
 
 
@@ -3015,15 +2741,26 @@ elif page == "🔍 Analysis":
                         invoice_data = extract_invoice_data(
                             invoice_text
                         )
+
+                        if invoice_data is None:
+                            st.error(
+                                "AI extraction failed."
+                            )
+                            st.stop()
+
                         document_type = classify_document(
                             invoice_text
                         )
+
+                        extracted_details = {}
+
                         if file_extension == ".pdf":
-                          extracted_details = extract_invoice_details(
-                             temp_path
-                          )
+                            extracted_details = extract_invoice_details(
+                                temp_path
+                            ) or {}
 
                         invoice_data.update(extracted_details)
+
                     if invoice_data is None:
 
                         st.error(
@@ -3086,21 +2823,41 @@ elif page == "🔍 Analysis":
                     client_id = None
                     accountant_id = None
 
+                    # CLIENT UPLOAD
+                    # The client ID always comes from the authenticated session.
+                    # Never trust a client_id supplied by the UI.
                     if current_role == "client":
 
                         client_id = current_user_id
 
-                        if assigned_accountant:
+                        assigned_accountant = get_client_accountant(
+                            current_user_id
+                        )
 
-                            accountant_id = assigned_accountant["id"]
+                        if not assigned_accountant:
+                            st.error(
+                                "❌ No accountant is assigned to your account. "
+                                "Please contact the administrator before uploading."
+                            )
+                            st.stop()
 
+                        accountant_id = assigned_accountant["id"]
+
+                    # ACCOUNTANT UPLOAD
                     elif current_role == "accountant":
 
                         accountant_id = current_user_id
 
+                    # ADMIN UPLOAD
                     elif current_role == "admin":
 
+                        client_id = None
                         accountant_id = None
+
+                    else:
+
+                        st.error("❌ Unauthorized user role.")
+                        st.stop()
 
                     # =================================================
                     # SAVE INVOICE
@@ -3166,6 +2923,10 @@ elif page == "🔍 Analysis":
                             Invoice Information
                         </div>
                         """
+                    )
+
+                    st.info(
+                        f"📄 Document Type: {document_type}"
                     )
 
                     info1, info2 = st.columns(2)
