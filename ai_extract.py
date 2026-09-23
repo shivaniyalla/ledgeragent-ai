@@ -1,30 +1,38 @@
+```python
 import os
 import json
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
 
 
-# ----------------------------------
-# Load API key
-# ----------------------------------
+# ==========================================
+# LOAD GEMINI API KEY
+# ==========================================
+
 load_dotenv()
 
-api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
-    raise ValueError("OPENAI_API_KEY not found in .env file.")
+    raise ValueError(
+        "GEMINI_API_KEY not found in .env file."
+    )
 
 
-# ----------------------------------
-# OpenAI client
-# ----------------------------------
-client = OpenAI(api_key=api_key)
+# ==========================================
+# GEMINI CLIENT
+# ==========================================
+
+client = genai.Client(api_key=api_key)
+
+MODEL_NAME = "gemini-3.8-flash"
 
 
-# ----------------------------------
-# AI Invoice Extraction Function
-# ----------------------------------
+# ==========================================
+# AI INVOICE EXTRACTION
+# ==========================================
+
 def extract_invoice_data(invoice_text):
 
     prompt = f"""
@@ -55,28 +63,51 @@ quantity
 unit_price
 amount
 
+Important rules:
+
+- quantity must be a number
+- unit_price must be a number
+- amount must be a number
+- subtotal must be a number
+- cgst must be a number
+- sgst must be a number
+- total must be a number
+- If a value is not available, use null
+- Do not invent information
+- Preserve the information from the invoice
+
 Invoice:
 {invoice_text}
 """
 
-    response = client.responses.create(
-        model="gpt-5.6-luna",
-        input=prompt
-    )
-
-    result = response.output_text
-
     try:
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json"
+            }
+        )
+
+        result = response.text
+
         data = json.loads(result)
+
         return data
 
-    except json.JSONDecodeError:
-        print("AI response was not valid JSON.")
-        print(result)
+    except Exception as e:
+
+        print("❌ Gemini invoice extraction failed.")
+        print("Error:", e)
+
         return None
-# ----------------------------------
-# Document Classification
-# ----------------------------------
+
+
+# ==========================================
+# DOCUMENT CLASSIFICATION
+# ==========================================
+
 def classify_document(document_text):
 
     prompt = f"""
@@ -95,45 +126,70 @@ Other
 
 Return ONLY the category name.
 
+Do not explain your answer.
+
 Document:
 {document_text}
 """
 
-    response = client.responses.create(
-        model="gpt-5.6-luna",
-        input=prompt
-    )
+    try:
 
-    result = response.output_text.strip()
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt
+        )
 
-    allowed_categories = [
-        "Invoice",
-        "Receipt",
-        "Purchase Document",
-        "Sales Document",
-        "Bank Statement",
-        "Other"
-    ]
+        result = response.text.strip()
 
-    if result in allowed_categories:
-        return result
+        allowed_categories = [
+            "Invoice",
+            "Receipt",
+            "Purchase Document",
+            "Sales Document",
+            "Bank Statement",
+            "Other"
+        ]
 
-    return "Other"
+        if result in allowed_categories:
+            return result
 
-# ----------------------------------
-# Test using sample invoice
-# ----------------------------------
+        return "Other"
+
+    except Exception as e:
+
+        print("❌ Gemini document classification failed.")
+        print("Error:", e)
+
+        return "Other"
+
+
+# ==========================================
+# TEST USING SAMPLE INVOICE
+# ==========================================
+
 if __name__ == "__main__":
 
     from read_invoice import extract_text_from_pdf
 
-    invoice_text = extract_text_from_pdf("sample_invoice.pdf")
+    invoice_text = extract_text_from_pdf(
+        "sample_invoice.pdf"
+    )
+
+    print("\n===== GEMINI AI EXTRACTION =====\n")
 
     data = extract_invoice_data(invoice_text)
 
-    print("\n===== AI EXTRACTED DATA =====\n")
-
     if data:
-        print(json.dumps(data, indent=4))
+
+        print(
+            json.dumps(
+                data,
+                indent=4,
+                ensure_ascii=False
+            )
+        )
+
     else:
+
         print("❌ AI extraction failed.")
+```
