@@ -4,3 +4,4 @@ python-dotenv
 pymupdf
 pandas
 reportlab
+google-genai
