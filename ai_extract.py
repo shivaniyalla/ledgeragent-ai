@@ -83,13 +83,22 @@ Invoice:
 
         response = client.models.generate_content(
             model=MODEL_NAME,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json"
-            }
+            contents=prompt
         )
 
-        result = response.text
+        result = response.text.strip()
+
+        # Remove markdown JSON fences if Gemini adds them
+        if result.startswith("```json"):
+            result = result[7:]
+
+        if result.startswith("```"):
+            result = result[3:]
+
+        if result.endswith("```"):
+            result = result[:-3]
+
+        result = result.strip()
 
         data = json.loads(result)
 
